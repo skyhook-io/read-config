@@ -1,0 +1,117 @@
+name: 'Read Skyhook Config'
+description: 'Read service build/deploy config from a Skyhook YAML file (path, dockerfile, build context, deployment repo) by service name'
+author: 'Skyhook'
+
+inputs:
+  working_directory:
+    description: 'Path to the repository root containing .skyhook/skyhook.yaml'
+    required: false
+    default: '.'
+  service_name:
+    description: 'Name of the service to look up in the config (must be non-empty)'
+    required: true
+  config_path:
+    description: 'Path to the skyhook config file relative to working_directory'
+    required: false
+    default: '.skyhook/skyhook.yaml'
+
+outputs:
+  # Service configuration
+  name:
+    description: 'Service name from config'
+    value: ${{ steps.parse.outputs.name }}
+  path:
+    description: 'Service path relative to repo root'
+    value: ${{ steps.parse.outputs.path }}
+  deployment_repo:
+    description: 'Separate deployment repository (if configured)'
+    value: ${{ steps.parse.outputs.deployment_repo }}
+  deployment_repo_path:
+    description: 'Path within deployment repository'
+    value: ${{ steps.parse.outputs.deployment_repo_path }}
+
+  # Build tool configuration
+  build_context:
+    description: 'Docker build context relative to repo root (defaults to "." when absent in config)'
+    value: ${{ steps.parse.outputs.build_context }}
+  dockerfile_path:
+    description: 'Dockerfile path relative to repo root'
+    value: ${{ steps.parse.outputs.dockerfile_path }}
+
+  # Status
+  config_found:
+    description: 'Whether the config file was found (true/false)'
+    value: ${{ steps.parse.outputs.config_found }}
+  service_found:
+    description: 'Whether the service was found in config (true/false)'
+    value: ${{ steps.parse.outputs.service_found }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install yq (v4)
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Accept preinstalled yq only if it is v4.x
+        if command -v yq &>/dev/null; then
+          if yq --version 2>&1 | grep -qE 'version v?4\.'; then
+            echo "Found preinstalled yq: $(yq --version)"
+            exit 0
+          fi
+          echo "::error::Found yq but not v4.x: $(yq --version 2>&1). Uninstall it or upgrade to v4."
+          exit 1
+        fi
+
+        case "$(uname -s)-$(uname -m)" in
+          Linux-x86_64)   ASSET=yq_linux_amd64 ;;
+          Linux-aarch64)  ASSET=yq_linux_arm64 ;;
+          Darwin-x86_64)  ASSET=yq_darwin_amd64 ;;
+          Darwin-arm64)   ASSET=yq_darwin_arm64 ;;
+          *) echo "::error::yq not found and no prebuilt binary for $(uname -s)-$(uname -m). Install yq v4 before using this action."; exit 1 ;;
+        esac
+
+        SUDO=""
+        [ "$(id -u)" -ne 0 ] && command -v sudo &>/dev/null && SUDO=sudo
+        DEST=/usr/local/bin/yq
+        URL="https://github.com/mikefarah/yq/releases/download/v4.47.1/${ASSET}"
+        echo "Installing yq v4.47.1 from $URL"
+
+        download() {
+          if command -v curl &>/dev/null; then
+            $SUDO curl -fsSL --retry 3 --retry-delay 2 -o "$DEST" "$URL"
+          elif command -v wget &>/dev/null; then
+            $SUDO wget -qO "$DEST" "$URL"
+          else
+            echo "::error::Neither curl nor wget is available; cannot install yq."
+            return 2
+          fi
+        }
+
+        for attempt in 1 2 3; do
+          if download; then
+            break
+          fi
+          rc=$?
+          if [ $rc -eq 2 ] || [ $attempt -eq 3 ]; then
+            echo "::error::yq download failed (attempt $attempt/3, exit $rc)"
+            exit 1
+          fi
+          sleep $((attempt * 2))
+        done
+
+        $SUDO chmod +x "$DEST"
+        yq --version
+
+    - name: Parse skyhook config
+      id: parse
+      shell: bash
+      env:
+        WORKING_DIR: ${{ inputs.working_directory }}
+        SERVICE_NAME: ${{ inputs.service_name }}
+        CONFIG_PATH: ${{ inputs.config_path }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/parse.sh"
+
+branding:
+  icon: 'file-text'
+  color: 'blue'

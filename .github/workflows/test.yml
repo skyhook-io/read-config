@@ -1,0 +1,72 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  shell-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yq v4 (linux)
+        if: runner.os == 'Linux'
+        run: |
+          if command -v yq && yq --version | grep -qE 'version v?4\.'; then exit 0; fi
+          sudo curl -fsSL --retry 3 --retry-delay 2 \
+            -o /usr/local/bin/yq \
+            https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Install yq v4 (macos)
+        if: runner.os == 'macOS'
+        run: brew install yq && yq --version
+
+      - run: bash tests/metadata_test.sh
+      - run: bash tests/parse_test.sh
+
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run action against fixture (buildContext present)
+        id: cfg
+        uses: ./
+        with:
+          working_directory: tests/fixtures
+          service_name: smoke-svc
+
+      - name: Verify outputs
+        run: |
+          set -e
+          test "${{ steps.cfg.outputs.config_found }}" = "true"
+          test "${{ steps.cfg.outputs.service_found }}" = "true"
+          test "${{ steps.cfg.outputs.name }}" = "smoke-svc"
+          test "${{ steps.cfg.outputs.path }}" = "services/smoke"
+          test "${{ steps.cfg.outputs.deployment_repo }}" = "KoalaOps/deployment"
+          test "${{ steps.cfg.outputs.deployment_repo_path }}" = "smoke"
+          test "${{ steps.cfg.outputs.build_context }}" = "services/smoke"
+          test "${{ steps.cfg.outputs.dockerfile_path }}" = "services/smoke/Dockerfile"
+          echo "smoke-svc outputs OK"
+
+      - name: Run action against fixture (buildContext absent -> default '.')
+        id: cfg2
+        uses: ./
+        with:
+          working_directory: tests/fixtures
+          service_name: smoke-default-context
+
+      - name: Verify default-context outputs
+        run: |
+          set -e
+          test "${{ steps.cfg2.outputs.build_context }}" = "."
+          test "${{ steps.cfg2.outputs.dockerfile_path }}" = "services/default/Dockerfile"
+          echo "default-context outputs OK"

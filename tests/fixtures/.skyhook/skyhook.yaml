@@ -1,0 +1,14 @@
+services:
+  - name: smoke-svc
+    path: services/smoke
+    deploymentRepo: KoalaOps/deployment
+    deploymentRepoPath: smoke
+    buildTool:
+      docker:
+        buildContext: services/smoke
+        dockerfilePath: services/smoke/Dockerfile
+  - name: smoke-default-context
+    path: services/default
+    buildTool:
+      docker:
+        dockerfilePath: services/default/Dockerfile
