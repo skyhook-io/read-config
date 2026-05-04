@@ -43,6 +43,8 @@ jobs:
         with:
           working_directory: tests/fixtures
           service_name: smoke-svc
+          default_build_context: '.'
+          default_dockerfile_path: Dockerfile
 
       - name: Verify outputs
         run: |
@@ -57,12 +59,14 @@ jobs:
           test "${{ steps.cfg.outputs.dockerfile_path }}" = "services/smoke/Dockerfile"
           echo "smoke-svc outputs OK"
 
-      - name: Run action against fixture (buildContext absent -> default '.')
+      - name: Run action against fixture (buildContext absent -> default_build_context applied)
         id: cfg2
         uses: ./
         with:
           working_directory: tests/fixtures
           service_name: smoke-default-context
+          default_build_context: '.'
+          default_dockerfile_path: Dockerfile
 
       - name: Verify default-context outputs
         run: |
@@ -70,3 +74,22 @@ jobs:
           test "${{ steps.cfg2.outputs.build_context }}" = "."
           test "${{ steps.cfg2.outputs.dockerfile_path }}" = "services/default/Dockerfile"
           echo "default-context outputs OK"
+
+      - name: Run action against fixture (service missing, defaults flow through)
+        id: cfg3
+        uses: ./
+        with:
+          working_directory: tests/fixtures
+          service_name: does-not-exist
+          default_build_context: '.'
+          default_dockerfile_path: Dockerfile
+
+      - name: Verify missing-service fallback outputs
+        run: |
+          set -e
+          test "${{ steps.cfg3.outputs.config_found }}" = "true"
+          test "${{ steps.cfg3.outputs.service_found }}" = "false"
+          test "${{ steps.cfg3.outputs.name }}" = ""
+          test "${{ steps.cfg3.outputs.build_context }}" = "."
+          test "${{ steps.cfg3.outputs.dockerfile_path }}" = "Dockerfile"
+          echo "missing-service fallback outputs OK"

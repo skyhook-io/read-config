@@ -20,11 +20,13 @@ This action parses the Skyhook configuration file and extracts service-specific 
   with:
     working_directory: code
     service_name: my-service
+    default_build_context: '.'
+    default_dockerfile_path: 'Dockerfile'
 
 - name: Build Docker image
   run: |
     docker build \
-      -f ${{ steps.config.outputs.dockerfile_path || 'Dockerfile' }} \
+      -f ${{ steps.config.outputs.dockerfile_path }} \
       ${{ steps.config.outputs.build_context }}
 ```
 
@@ -35,6 +37,8 @@ This action parses the Skyhook configuration file and extracts service-specific 
 | `working_directory` | Path to the repository root containing `.skyhook/skyhook.yaml` | No | `.` |
 | `service_name` | Name of the service to look up in the config | Yes | - |
 | `config_path` | Path to the skyhook config file relative to working_directory | No | `.skyhook/skyhook.yaml` |
+| `default_build_context` | Value emitted as `build_context` whenever it would otherwise be empty: YAML field absent, config file missing, or service missing. The action does not pick a value for you - callers must pass a non-empty default, otherwise the action fails loudly. | Yes | - |
+| `default_dockerfile_path` | Value emitted as `dockerfile_path` whenever it would otherwise be empty (same triggers as `default_build_context`). Must be non-empty. | Yes | - |
 
 ## Outputs
 
@@ -44,10 +48,12 @@ This action parses the Skyhook configuration file and extracts service-specific 
 | `path` | Service path relative to repo root |
 | `deployment_repo` | Separate deployment repository (if configured) |
 | `deployment_repo_path` | Path within deployment repository |
-| `build_context` | Docker build context relative to repo root (defaults to `.` when absent in config) |
-| `dockerfile_path` | Dockerfile path relative to repo root |
+| `build_context` | Docker build context relative to repo root. Falls back to `default_build_context` when absent/empty in config or when config/service is not found. |
+| `dockerfile_path` | Dockerfile path relative to repo root. Falls back to `default_dockerfile_path` when absent/empty in config or when config/service is not found. |
 | `config_found` | Whether the config file was found (`true`/`false`) |
 | `service_found` | Whether the service was found in config (`true`/`false`) |
+
+> When a default is applied because a YAML field was absent, the action emits a `::notice::` line. When the entire config file or service is missing, the action emits a `::warning::` (more prominent in the run UI) — so the source of every emitted value is visible at a glance.
 
 ## Config File Format
 
@@ -68,7 +74,7 @@ services:
     path: services/another
     buildTool:
       docker:
-        # buildContext omitted - defaults to "."
+        # buildContext omitted - falls back to default_build_context input
         dockerfilePath: services/another/Dockerfile
 
 environments:
@@ -94,31 +100,44 @@ jobs:
         with:
           working_directory: code
           service_name: ${{ env.SERVICE_NAME }}
+          default_build_context: '.'
+          default_dockerfile_path: Dockerfile
 
       - name: Build and push Docker image
         uses: skyhook-io/docker-build-push-action@v1
         with:
           context: code/${{ steps.config.outputs.build_context }}
-          dockerfile: code/${{ steps.config.outputs.dockerfile_path || format('{0}/Dockerfile', steps.config.outputs.build_context) }}
+          dockerfile: code/${{ steps.config.outputs.dockerfile_path }}
           image: ${{ inputs.image }}
 ```
 
 ## Behavior matrix
 
-| Scenario | `config_found` | `service_found` | `build_context` | Other outputs |
-|---|---|---|---|---|
-| Config file missing | `false` | `false` | `""` | `""` |
-| Config found, service missing | `true` | `false` | `""` | `""` |
-| Service found, `buildContext` set | `true` | `true` | from config | from config |
-| Service found, `buildContext` absent | `true` | `true` | `"."` | from config |
-| Duplicate service names in config | n/a | n/a | n/a | action exits 1 |
+Let `BC` = `default_build_context` input, `DF` = `default_dockerfile_path` input.
 
-`build_context` defaults to `"."` only when the service is found and the field is absent. When the service or config itself is missing, `build_context` is empty - the workflow should decide whether to fall back or fail loudly:
+**Uniform rule:** if the action would emit an empty value for `build_context` or `dockerfile_path`, it exits 1 instead. The corresponding default input must be non-empty whenever the YAML doesn't supply the value.
+
+| Scenario | `config_found` | `service_found` | `name` / `path` / `deployment_*` | `build_context` | `dockerfile_path` |
+|---|---|---|---|---|---|
+| Service found, both YAML fields set | `true` | `true` | from config | from config | from config |
+| Service found, only `buildContext` absent/`""`/`null`, `BC` non-empty | `true` | `true` | from config | `BC` | from config |
+| Service found, only `dockerfilePath` absent/`""`/`null`, `DF` non-empty | `true` | `true` | from config | from config | `DF` |
+| Service found, both YAML fields absent, both defaults non-empty | `true` | `true` | from config | `BC` | `DF` |
+| Service missing, both defaults non-empty | `true` | `false` | `""` | `BC` | `DF` |
+| Config file missing, both defaults non-empty | `false` | `false` | `""` | `BC` | `DF` |
+| Any of the above where the relevant default is empty | n/a | n/a | n/a | n/a | **action exits 1** |
+| Duplicate service names in config | n/a | n/a | n/a | n/a | action exits 1 |
+
+The action **always** emits a non-empty `build_context` and `dockerfile_path` on success, so the consuming workflow can drop `||` fallbacks:
 
 ```yaml
-context: ${{ steps.config.outputs.build_context || '.' }}
-dockerfile: ${{ steps.config.outputs.dockerfile_path || 'Dockerfile' }}
+context: code/${{ steps.config.outputs.build_context }}
+dockerfile: code/${{ steps.config.outputs.dockerfile_path }}
 ```
+
+Logging:
+- A `::notice::` is emitted when a default is applied because a YAML field was absent for an otherwise-found service.
+- A `::warning::` is emitted when the entire config file or service is missing and defaults flow through (more prominent than a notice — the not-found state is usually a misconfiguration).
 
 ## Runner requirements
 

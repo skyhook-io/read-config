@@ -14,6 +14,18 @@ inputs:
     description: 'Path to the skyhook config file relative to working_directory'
     required: false
     default: '.skyhook/skyhook.yaml'
+  default_build_context:
+    description: |
+      Value emitted as `build_context` whenever it would otherwise be empty: YAML field absent, config
+      file missing, or service missing. Must be non-empty - if a default would be applied and this input
+      is empty, the action exits 1 (refuses to emit an empty `build_context` that would break a downstream
+      `docker build`).
+    required: true
+  default_dockerfile_path:
+    description: |
+      Value emitted as `dockerfile_path` whenever it would otherwise be empty (same triggers as
+      `default_build_context`). Must be non-empty.
+    required: true
 
 outputs:
   # Service configuration
@@ -32,10 +44,10 @@ outputs:
 
   # Build tool configuration
   build_context:
-    description: 'Docker build context relative to repo root (defaults to "." when absent in config)'
+    description: 'Docker build context relative to repo root. Falls back to the default_build_context input when absent/empty in config or when config/service is not found.'
     value: ${{ steps.parse.outputs.build_context }}
   dockerfile_path:
-    description: 'Dockerfile path relative to repo root'
+    description: 'Dockerfile path relative to repo root. Falls back to the default_dockerfile_path input when absent/empty in config or when config/service is not found.'
     value: ${{ steps.parse.outputs.dockerfile_path }}
 
   # Status
@@ -110,6 +122,8 @@ runs:
         WORKING_DIR: ${{ inputs.working_directory }}
         SERVICE_NAME: ${{ inputs.service_name }}
         CONFIG_PATH: ${{ inputs.config_path }}
+        DEFAULT_BUILD_CONTEXT: ${{ inputs.default_build_context }}
+        DEFAULT_DOCKERFILE_PATH: ${{ inputs.default_dockerfile_path }}
       run: bash "$GITHUB_ACTION_PATH/scripts/parse.sh"
 
 branding:
