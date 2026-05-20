@@ -1,0 +1,11 @@
+# Fixture for the CI 'include_env=true with no environments block' smoke step.
+# Intentionally has no `environments:` key so the action exits 1 with
+# "Not supported yet" - the smoke job uses continue-on-error and asserts that
+# outcome.
+services:
+  - name: smoke-svc
+    path: services/smoke
+    buildTool:
+      docker:
+        buildContext: services/smoke
+        dockerfilePath: services/smoke/Dockerfile

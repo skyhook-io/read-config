@@ -436,6 +436,222 @@ assert_eq "$(read_output "$out" deployment_repo)" "key=value-equals" "literal '=
 expected_multiline=$'line1\nline2'
 assert_eq "$(read_output "$out" deployment_repo_path)" "$expected_multiline" "multiline value round-trips through heredoc"
 
+# --- include_env tests ------------------------------------------------------
+# Lightweight runner that lets a test pick INCLUDE_ENV per call. Kept separate
+# from run_parse() so the existing tests (which assert INCLUDE_ENV defaults to
+# off) keep proving the backwards-compatible path.
+run_parse_env() {
+  local working_dir="$1" svc="$2" include_env="$3" cfg_path="${4:-.skyhook/skyhook.yaml}"
+  local out_file err_file
+  out_file="$WORK/gh_output.$RANDOM"
+  err_file="$WORK/gh_err.$RANDOM"
+  : >"$out_file"
+  set +e
+  WORKING_DIR="$working_dir" \
+  SERVICE_NAME="$svc" \
+  CONFIG_PATH="$cfg_path" \
+  DEFAULT_BUILD_CONTEXT="$DEFAULT_BC" \
+  DEFAULT_DOCKERFILE_PATH="$DEFAULT_DF" \
+  INCLUDE_ENV="$include_env" \
+  GITHUB_OUTPUT="$out_file" \
+    bash "$PARSE_SCRIPT" >"$err_file" 2>&1
+  RC=$?
+  set -e
+  COMBINED="$(cat "$err_file")"
+  OUT_FILE="$out_file"
+}
+
+# Fixture with both services and an environments block - covers the happy path
+# AND the "service-not-found but environments present" case in one fixture.
+ENV_DIR="$WORK/with-envs"
+mkdir -p "$ENV_DIR/.skyhook"
+cat >"$ENV_DIR/.skyhook/skyhook.yaml" <<'YAML'
+services:
+  - name: svc-a
+    path: services/a
+    buildTool:
+      docker:
+        buildContext: services/a
+        dockerfilePath: services/a/Dockerfile
+environments:
+  - name: autopush
+    clusterName: nonprod-cluster-us-east1
+    cloudProvider: gcp
+    account: koalabackend
+    location: us-east1-b
+    namespace: autopush
+  - name: dev
+    clusterName: nonprod-cluster-us-east1
+    cloudProvider: gcp
+    account: koalabackend
+    location: us-east1-b
+    namespace: dev
+  - name: prod
+    clusterName: prod-cluster-us-east1
+    cloudProvider: gcp
+    account: koalabackend
+    location: us-east1-b
+    namespace: prod
+  - name: ephemeral
+    clusterName: ""
+    namespace: ephemeral
+YAML
+
+# --- include_env=true + environments present + service found => emitted ---
+run_parse_env "$ENV_DIR" "svc-a" "true"
+[ "$RC" -eq 0 ] || { echo "FAIL: include_env=true with env block + valid service should succeed"; echo "$COMBINED"; exit 1; }
+got_env=$(read_output "$OUT_FILE" environments)
+assert_contains "$got_env" "name: autopush" "include_env=true: environments output contains 'autopush'"
+assert_contains "$got_env" "name: ephemeral" "include_env=true: environments output contains 'ephemeral'"
+assert_contains "$got_env" "clusterName: prod-cluster-us-east1" "include_env=true: nested fields survive heredoc round-trip"
+# Sanity: the OTHER outputs are untouched by include_env=true.
+assert_eq "$(read_output "$OUT_FILE" service_found)" "true" "include_env=true: service_found still true"
+assert_eq "$(read_output "$OUT_FILE" build_context)" "services/a" "include_env=true: build_context unchanged"
+# Log line: a future change to the wording must update the test deliberately.
+assert_contains "$COMBINED" "environments: emitted" "include_env=true: log records the emission"
+
+# --- include_env=true + environments present + service MISSING => env still emitted ---
+# environments is a top-level concern, independent of service lookup. Confirming
+# the not-found service branch doesn't drop the environments output.
+run_parse_env "$ENV_DIR" "nonexistent" "true"
+[ "$RC" -eq 0 ] || { echo "FAIL: include_env=true with env block + missing service should succeed (defaults flow through)"; echo "$COMBINED"; exit 1; }
+got_env=$(read_output "$OUT_FILE" environments)
+assert_contains "$got_env" "name: autopush" "include_env=true + missing service: env still emitted"
+assert_eq "$(read_output "$OUT_FILE" service_found)" "false" "include_env=true + missing service: service_found=false"
+
+# --- include_env=false (default) + env block present => environments empty ---
+# Regression guard: env data must NOT leak unless include_env=true.
+run_parse_env "$ENV_DIR" "svc-a" "false"
+[ "$RC" -eq 0 ] || { echo "FAIL: include_env=false should succeed even when env block present"; echo "$COMBINED"; exit 1; }
+assert_eq "$(read_output "$OUT_FILE" environments)" "" "include_env=false: environments output stays empty"
+assert_contains "$COMBINED" "environments: skipped" "include_env=false: log records the skip"
+
+# --- include_env=true + missing service still logs the emission (consistency guard) ---
+# emit_environments() is called from the service-not-found branch too. The log
+# line must fire there so users see the same diagnostic regardless of branch.
+run_parse_env "$ENV_DIR" "nonexistent" "true"
+assert_contains "$COMBINED" "environments: emitted" "include_env=true + missing service: log records the emission"
+
+# --- include_env=true + no environments block in config => Not supported yet ---
+NOENV_DIR="$WORK/no-envs"
+mkdir -p "$NOENV_DIR/.skyhook"
+cat >"$NOENV_DIR/.skyhook/skyhook.yaml" <<'YAML'
+services:
+  - name: only-svc
+    path: services/only
+    buildTool:
+      docker:
+        buildContext: services/only
+        dockerfilePath: services/only/Dockerfile
+YAML
+run_parse_env "$NOENV_DIR" "only-svc" "true"
+[ "$RC" -ne 0 ] || { echo "FAIL: include_env=true with no env block should exit non-zero"; echo "$COMBINED"; exit 1; }
+assert_contains "$COMBINED" "Not supported yet" "include_env=true + no env block: error mentions 'Not supported yet'"
+assert_contains "$COMBINED" "no 'environments' block" "include_env=true + no env block: error names the missing key"
+
+# --- include_env=true + environments: null => Not supported yet ---
+# Explicit null is semantically "no environments" - same outcome as missing key.
+NULL_ENV_DIR="$WORK/null-envs"
+mkdir -p "$NULL_ENV_DIR/.skyhook"
+cat >"$NULL_ENV_DIR/.skyhook/skyhook.yaml" <<'YAML'
+services:
+  - name: only-svc
+    path: services/only
+    buildTool:
+      docker:
+        buildContext: services/only
+        dockerfilePath: services/only/Dockerfile
+environments: null
+YAML
+run_parse_env "$NULL_ENV_DIR" "only-svc" "true"
+[ "$RC" -ne 0 ] || { echo "FAIL: include_env=true with 'environments: null' should exit non-zero"; echo "$COMBINED"; exit 1; }
+assert_contains "$COMBINED" "Not supported yet" "include_env=true + environments:null: 'Not supported yet' error"
+
+# --- include_env=true + YAML null aliases (~, Null, NULL) => Not supported yet ---
+# Regression guard: the original textual check only matched lowercase "null".
+# The structural (tag-based) check must catch every YAML null spelling so
+# users can't accidentally bypass the failure with idiomatic alternatives.
+alias_idx=0
+for spelling in '~' 'Null' 'NULL'; do
+  alias_idx=$((alias_idx + 1))
+  # Use an index-based dir name (not the spelling itself): 'Null' and 'NULL'
+  # collide on case-insensitive filesystems like macOS APFS, which would
+  # silently overwrite the previous iteration's fixture.
+  ALIAS_DIR="$WORK/null-alias-$alias_idx"
+  mkdir -p "$ALIAS_DIR/.skyhook"
+  cat >"$ALIAS_DIR/.skyhook/skyhook.yaml" <<YAML
+services:
+  - name: only-svc
+    path: services/only
+    buildTool:
+      docker:
+        buildContext: services/only
+        dockerfilePath: services/only/Dockerfile
+environments: $spelling
+YAML
+  run_parse_env "$ALIAS_DIR" "only-svc" "true"
+  [ "$RC" -ne 0 ] || { echo "FAIL: include_env=true with 'environments: $spelling' should exit non-zero"; echo "$COMBINED"; exit 1; }
+  assert_contains "$COMBINED" "Not supported yet" "include_env=true + environments: $spelling rejected with 'Not supported yet'"
+done
+
+# --- include_env=true + bare 'environments:' (no value) => Not supported yet ---
+# YAML parses a key with no value as null, same logical state as the explicit-null case.
+BARE_ENV_DIR="$WORK/bare-envs"
+mkdir -p "$BARE_ENV_DIR/.skyhook"
+cat >"$BARE_ENV_DIR/.skyhook/skyhook.yaml" <<'YAML'
+services:
+  - name: only-svc
+    path: services/only
+    buildTool:
+      docker:
+        buildContext: services/only
+        dockerfilePath: services/only/Dockerfile
+environments:
+YAML
+run_parse_env "$BARE_ENV_DIR" "only-svc" "true"
+[ "$RC" -ne 0 ] || { echo "FAIL: include_env=true with bare 'environments:' should exit non-zero"; echo "$COMBINED"; exit 1; }
+assert_contains "$COMBINED" "Not supported yet" "include_env=true + bare environments: 'Not supported yet' error"
+
+# --- include_env=true + environments: [] => emits "[]" (pass-through, per spec) ---
+# Spec: "If include true and it in the skyhook.yaml, return it". An empty list
+# IS in the yaml - the user explicitly wrote []. We return the literal data;
+# the caller decides whether an empty list is meaningful. This test pins the
+# behavior so a future "fail on empty" change has to be deliberate.
+EMPTY_LIST_DIR="$WORK/empty-list-envs"
+mkdir -p "$EMPTY_LIST_DIR/.skyhook"
+cat >"$EMPTY_LIST_DIR/.skyhook/skyhook.yaml" <<'YAML'
+services:
+  - name: only-svc
+    path: services/only
+    buildTool:
+      docker:
+        buildContext: services/only
+        dockerfilePath: services/only/Dockerfile
+environments: []
+YAML
+run_parse_env "$EMPTY_LIST_DIR" "only-svc" "true"
+[ "$RC" -eq 0 ] || { echo "FAIL: include_env=true with empty list should succeed (pass-through)"; echo "$COMBINED"; exit 1; }
+assert_eq "$(read_output "$OUT_FILE" environments)" "[]" "include_env=true + empty list: emits '[]' verbatim"
+
+# --- include_env=true + config file missing => Not supported yet ---
+run_parse_env "$WORK/no-such-dir-env" "anything" "true"
+[ "$RC" -ne 0 ] || { echo "FAIL: include_env=true with missing config file should exit non-zero"; echo "$COMBINED"; exit 1; }
+assert_contains "$COMBINED" "Not supported yet" "include_env=true + missing config: error mentions 'Not supported yet'"
+assert_contains "$COMBINED" "the local config file" "include_env=true + missing config: error mentions local config file"
+
+# --- include_env=false + config file missing => existing fallback path still works ---
+# (Regression guard: the new fail-fast path must NOT trigger when include_env != "true".)
+run_parse_env "$WORK/no-such-dir-env" "anything" "false"
+[ "$RC" -eq 0 ] || { echo "FAIL: include_env=false + missing config should still fall through to defaults"; echo "$COMBINED"; exit 1; }
+assert_eq "$(read_output "$OUT_FILE" config_found)" "false" "include_env=false + missing config: config_found=false"
+assert_eq "$(read_output "$OUT_FILE" environments)" "" "include_env=false + missing config: environments empty"
+
+# --- include_env unset behaves like include_env=false (default) ---
+# This is what the existing run_parse() helper has been exercising all along;
+# spot-check it explicitly so a future "default true" mistake gets caught.
+out=$(run_parse "$ENV_DIR" svc-a)
+assert_eq "$(read_output "$out" environments)" "" "INCLUDE_ENV unset: environments output empty (default off)"
+
 # --- action.yml structure sanity ---
 grep -q 'bash "\$GITHUB_ACTION_PATH/scripts/parse.sh"' "$ACTION_FILE" || { echo "FAIL: action.yml does not call scripts/parse.sh"; exit 1; }
 grep -q 'version v?4\\.' "$ACTION_FILE" || { echo "FAIL: action.yml does not validate yq v4"; exit 1; }
@@ -446,6 +662,11 @@ grep -q "default_build_context:" "$ACTION_FILE" || { echo "FAIL: action.yml does
 grep -q "default_dockerfile_path:" "$ACTION_FILE" || { echo "FAIL: action.yml does not declare default_dockerfile_path input"; exit 1; }
 grep -q "DEFAULT_BUILD_CONTEXT:" "$ACTION_FILE" || { echo "FAIL: action.yml does not wire DEFAULT_BUILD_CONTEXT env"; exit 1; }
 grep -q "DEFAULT_DOCKERFILE_PATH:" "$ACTION_FILE" || { echo "FAIL: action.yml does not wire DEFAULT_DOCKERFILE_PATH env"; exit 1; }
+grep -q "include_env:" "$ACTION_FILE" || { echo "FAIL: action.yml does not declare include_env input"; exit 1; }
+grep -q "git_token:" "$ACTION_FILE" || { echo "FAIL: action.yml does not declare git_token input"; exit 1; }
+grep -q "environments:" "$ACTION_FILE" || { echo "FAIL: action.yml does not declare environments output"; exit 1; }
+grep -q "INCLUDE_ENV:" "$ACTION_FILE" || { echo "FAIL: action.yml does not wire INCLUDE_ENV env"; exit 1; }
+grep -q "GIT_TOKEN:" "$ACTION_FILE" || { echo "FAIL: action.yml does not wire GIT_TOKEN env"; exit 1; }
 # Both default inputs must be required:true (no implicit defaults)
 awk '/^  default_build_context:/{f=1} f && /required: true/{print "OK"; exit} f && /^  [a-z]/ && !/^  default_build_context:/{exit}' "$ACTION_FILE" | grep -q OK \
   || { echo "FAIL: default_build_context is not required: true"; exit 1; }

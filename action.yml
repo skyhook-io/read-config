@@ -26,6 +26,23 @@ inputs:
       Value emitted as `dockerfile_path` whenever it would otherwise be empty (same triggers as
       `default_build_context`). Must be non-empty.
     required: true
+  include_env:
+    description: |
+      When `true`, also emit the `environments` block from the local skyhook.yaml as the
+      `environments` output. If `true` and the local config has no `environments` block (key absent,
+      or any YAML null spelling: `null` / `Null` / `NULL` / `~` / bare `environments:`), the action
+      exits 1 with "Not supported yet". Same exit if the config file itself is missing. An explicit
+      empty list (`environments: []`) is passed through as-is. Sourcing environments from an external
+      repository is reserved for a future release. Default `false`.
+    required: false
+    default: 'false'
+  git_token:
+    description: |
+      Reserved for a future release: token used to fetch the `environments` block from an external
+      repository when `include_env=true` and the block is not present locally. Currently unused -
+      the action fails with "Not supported yet" in that scenario regardless of this input.
+    required: false
+    default: ''
 
 outputs:
   # Service configuration
@@ -57,6 +74,15 @@ outputs:
   service_found:
     description: 'Whether the service was found in config (true/false)'
     value: ${{ steps.parse.outputs.service_found }}
+  environments:
+    description: |
+      YAML-formatted block of environments from the local skyhook.yaml when `include_env=true` and
+      the block is present (multi-line, passed back verbatim - including the `[]` literal for an
+      explicit empty list). Empty string when `include_env=false` (the default). When
+      `include_env=true` and the block is absent, the action exits 1 ("Not supported yet") instead
+      of emitting this output. Consume via env-passthrough (see README) to preserve quotes / $ /
+      backticks across shell expansion.
+    value: ${{ steps.parse.outputs.environments }}
 
 runs:
   using: 'composite'
@@ -124,6 +150,8 @@ runs:
         CONFIG_PATH: ${{ inputs.config_path }}
         DEFAULT_BUILD_CONTEXT: ${{ inputs.default_build_context }}
         DEFAULT_DOCKERFILE_PATH: ${{ inputs.default_dockerfile_path }}
+        INCLUDE_ENV: ${{ inputs.include_env }}
+        GIT_TOKEN: ${{ inputs.git_token }}
       run: bash "$GITHUB_ACTION_PATH/scripts/parse.sh"
 
 branding:

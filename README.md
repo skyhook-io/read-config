@@ -39,6 +39,8 @@ This action parses the Skyhook configuration file and extracts service-specific 
 | `config_path` | Path to the skyhook config file relative to working_directory | No | `.skyhook/skyhook.yaml` |
 | `default_build_context` | Value emitted as `build_context` whenever it would otherwise be empty: YAML field absent, config file missing, or service missing. The action does not pick a value for you - callers must pass a non-empty default, otherwise the action fails loudly. | Yes | - |
 | `default_dockerfile_path` | Value emitted as `dockerfile_path` whenever it would otherwise be empty (same triggers as `default_build_context`). Must be non-empty. | Yes | - |
+| `include_env` | When `true`, also emit the `environments` block from the local skyhook.yaml as the `environments` output. When `true` and the local config has no `environments` block (key absent, or any YAML null spelling: `null` / `Null` / `NULL` / `~` / bare `environments:`), the action exits 1 with `Not supported yet`. When `true` and the config file itself is missing, the action also exits 1 with `Not supported yet`. Both cases are reserved for a future external-repository fetch path. | No | `false` |
+| `git_token` | Reserved for a future release: token used to fetch the `environments` block from an external repository when `include_env=true` and the block is not present locally. Currently unused - the action fails `Not supported yet` in that scenario regardless of this input. | No | `''` |
 
 ## Outputs
 
@@ -52,6 +54,7 @@ This action parses the Skyhook configuration file and extracts service-specific 
 | `dockerfile_path` | Dockerfile path relative to repo root. Falls back to `default_dockerfile_path` when absent/empty in config or when config/service is not found. |
 | `config_found` | Whether the config file was found (`true`/`false`) |
 | `service_found` | Whether the service was found in config (`true`/`false`) |
+| `environments` | YAML block of environments from the local skyhook.yaml when `include_env=true` and the block is present. Empty when `include_env=false`. When `include_env=true` and the block is absent, the action exits 1 instead of emitting this output. |
 
 > When a default is applied because a YAML field was absent, the action emits a `::notice::` line. When the entire config file or service is missing, the action emits a `::warning::` (more prominent in the run UI) — so the source of every emitted value is visible at a glance.
 
@@ -111,6 +114,65 @@ jobs:
           image: ${{ inputs.image }}
 ```
 
+## Example: include the environments block
+
+```yaml
+- name: Read service config + environments
+  id: config
+  uses: skyhook-io/read-config@v1
+  with:
+    working_directory: code
+    service_name: my-service
+    default_build_context: '.'
+    default_dockerfile_path: Dockerfile
+    include_env: 'true'
+
+- name: Use environments
+  env:
+    # IMPORTANT: pass via env, not via direct expression interpolation. The
+    # environments YAML can contain double quotes, `$`, backticks, etc., which
+    # would be re-interpreted by the shell if inlined into the `run:` script.
+    ENVS: ${{ steps.config.outputs.environments }}
+  run: |
+    printf '%s\n' "$ENVS" > /tmp/envs.yaml
+    yq '.[].name' /tmp/envs.yaml
+```
+
+For a `skyhook.yaml` containing:
+
+```yaml
+environments:
+  - name: autopush
+    clusterName: nonprod-cluster-us-east1
+    cloudProvider: gcp
+    account: koalabackend
+    location: us-east1-b
+    namespace: autopush
+  - name: dev
+    clusterName: nonprod-cluster-us-east1
+    cloudProvider: gcp
+    account: koalabackend
+    location: us-east1-b
+    namespace: dev
+  - name: prod
+    clusterName: prod-cluster-us-east1
+    cloudProvider: gcp
+    account: koalabackend
+    location: us-east1-b
+    namespace: prod
+  - name: ephemeral
+    clusterName: ""
+    namespace: ephemeral
+```
+
+the `environments` output contains the YAML list above (without the top-level `environments:` key).
+
+If `include_env=true` and the local `skyhook.yaml` has no `environments:` block (key absent, or any YAML null spelling: `null` / `Null` / `NULL` / `~` / bare `environments:`) the action exits 1 with `Not supported yet`. Same exit if the config file itself is missing. An explicit empty list (`environments: []`) is passed through as-is - the action returns whatever the file declares.
+
+`environments` is orthogonal to service lookup: when `include_env=true` and the block is present, the output is populated even if the named service is missing. (The service-missing `::warning::` still fires for the per-service outputs.)
+
+`git_token` is declared so callers can wire it in advance, but the external-repository code path is not yet implemented.
+
 ## Behavior matrix
 
 Let `BC` = `default_build_context` input, `DF` = `default_dockerfile_path` input.
@@ -127,6 +189,11 @@ Let `BC` = `default_build_context` input, `DF` = `default_dockerfile_path` input
 | Config file missing, both defaults non-empty | `false` | `false` | `""` | `BC` | `DF` |
 | Any of the above where the relevant default is empty | n/a | n/a | n/a | n/a | **action exits 1** |
 | Duplicate service names in config | n/a | n/a | n/a | n/a | action exits 1 |
+| `include_env=true`, `environments` present in local config | unchanged | unchanged | unchanged | unchanged | unchanged - and `environments` output is populated |
+| `include_env=true`, `environments: []` (explicit empty list) | unchanged | unchanged | unchanged | unchanged | unchanged - `environments` output is the literal `[]` (pass-through) |
+| `include_env=true`, no `environments` block (key absent, `null`, `~`, `Null`, `NULL`, or bare) | n/a | n/a | n/a | n/a | **action exits 1 - `Not supported yet`** |
+| `include_env=true`, local config file missing | n/a | n/a | n/a | n/a | **action exits 1 - `Not supported yet`** |
+| `include_env=false` (default) | unchanged | unchanged | unchanged | unchanged | `environments` output is empty |
 
 The action **always** emits a non-empty `build_context` and `dockerfile_path` on success, so the consuming workflow can drop `||` fallbacks:
 

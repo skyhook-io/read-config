@@ -12,3 +12,11 @@ services:
     buildTool:
       docker:
         dockerfilePath: services/default/Dockerfile
+
+environments:
+  - name: dev
+    clusterName: dev-cluster
+    namespace: dev
+  - name: prod
+    clusterName: prod-cluster
+    namespace: prod
