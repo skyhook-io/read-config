@@ -9,6 +9,12 @@
 #                             config/service is not found. The action does not pick a default
 #                             for the caller; this is intentional so callers must opt in.
 #   DEFAULT_DOCKERFILE_PATH - REQUIRED. Same contract as DEFAULT_BUILD_CONTEXT, for dockerfile_path.
+#   INCLUDE_ENV             - "true" to additionally emit the `environments` block from the local
+#                             config as the `environments` output. Anything else (including unset)
+#                             is treated as false. When "true" and the local config has no
+#                             `environments` block (or the file is missing), the script exits 1
+#                             with "Not supported yet" - external-repo support is not implemented.
+#   GIT_TOKEN               - Reserved for the future external-repo path. Currently unused.
 #   GITHUB_OUTPUT           - file to append outputs to (required by GitHub Actions; tests pass a tempfile)
 #
 # Exits non-zero with ::error:: on:
@@ -34,6 +40,7 @@ WORKING_DIR="${WORKING_DIR:-.}"
 WORKING_DIR="${WORKING_DIR%/}"
 CONFIG_PATH="${CONFIG_PATH:-.skyhook/skyhook.yaml}"
 SERVICE_NAME="${SERVICE_NAME:-}"
+INCLUDE_ENV="${INCLUDE_ENV:-false}"
 
 if [ -z "$SERVICE_NAME" ]; then
   echo "::error::service_name input is required and must be non-empty"
@@ -97,14 +104,62 @@ require_nonempty_defaults_for_unmatched() {
   fi
 }
 
+# Emit (or refuse to emit) the `environments` output. Safe to call from any
+# exit path that has confirmed CONFIG_FILE exists, OR from the empty-on-disable
+# case (INCLUDE_ENV != "true").
+#
+# Contract:
+#   - INCLUDE_ENV != "true" -> emit empty string (the default; backwards-compatible).
+#   - INCLUDE_ENV == "true" + `environments` block present -> emit it as YAML (heredoc form
+#     preserves multi-line structure across $GITHUB_OUTPUT).
+#   - INCLUDE_ENV == "true" + `environments` block absent  -> exit 1 "Not supported yet"
+#     (external-repo lookup via GIT_TOKEN is reserved for a future release).
+emit_environments() {
+  if [ "$INCLUDE_ENV" != "true" ]; then
+    write_output environments ""
+    echo "  environments: skipped (include_env=${INCLUDE_ENV})"
+    return 0
+  fi
+  # Detect "no environments" structurally via yq's tag, not by string-matching
+  # the value: YAML has four null spellings (null / Null / NULL / ~), plus a
+  # bare key with no value (also null), plus an outright-missing key. yq's
+  # tag is `!!null` in all of those cases; anything else means the key was
+  # explicitly set to a value (including `[]`, which passes through verbatim
+  # per the user spec - if `environments` is in the yaml, return it).
+  local env_tag environments
+  if ! env_tag=$(yq e '.environments | tag' "$CONFIG_FILE"); then
+    echo "::error::Failed to parse $CONFIG_FILE while reading 'environments'"
+    exit 1
+  fi
+  if [ "$env_tag" = "!!null" ]; then
+    echo "::error::include_env=true but no 'environments' block in '${CONFIG_FILE}' - Not supported yet (external-repo environments source is not implemented; git_token is reserved for that future path)"
+    exit 1
+  fi
+  if ! environments=$(yq e '.environments' "$CONFIG_FILE"); then
+    echo "::error::Failed to parse $CONFIG_FILE while reading 'environments'"
+    exit 1
+  fi
+  write_output environments "$environments"
+  echo "  environments: emitted (include_env=true, tag=${env_tag})"
+}
+
 # Config file missing
 if [ ! -f "$CONFIG_FILE" ]; then
+  # include_env=true means the caller wants the environments block from the local file.
+  # No local file -> there's nothing to return, and the external-repo path is not built yet.
+  if [ "$INCLUDE_ENV" = "true" ]; then
+    echo "::error::include_env=true but the local config file '${CONFIG_FILE}' is missing - Not supported yet (external-repo environments source is not implemented)"
+    exit 1
+  fi
   echo "Config file not found: $CONFIG_FILE"
   require_nonempty_defaults_for_unmatched "Config file not found at '${CONFIG_FILE}'"
   echo "::warning::Config file not found - emitting build_context='${DEFAULT_BUILD_CONTEXT}' and dockerfile_path='${DEFAULT_DOCKERFILE_PATH}' from default_build_context / default_dockerfile_path inputs"
   write_output config_found false
   write_output service_found false
   write_unmatched_outputs
+  # Safe: INCLUDE_ENV is guaranteed != "true" here (fail-fast above caught the true case),
+  # so emit_environments will just write an empty string.
+  emit_environments
   exit 0
 fi
 
@@ -127,6 +182,7 @@ if [ -z "$SERVICE_INDEX" ]; then
   echo "::warning::Service '${SERVICE_NAME}' not found - emitting build_context='${DEFAULT_BUILD_CONTEXT}' and dockerfile_path='${DEFAULT_DOCKERFILE_PATH}' from default_build_context / default_dockerfile_path inputs"
   write_output service_found false
   write_unmatched_outputs
+  emit_environments
   exit 0
 fi
 
@@ -185,6 +241,7 @@ write_output deployment_repo "$DEPLOYMENT_REPO"
 write_output deployment_repo_path "$DEPLOYMENT_REPO_PATH"
 write_output build_context "$BUILD_CONTEXT"
 write_output dockerfile_path "$DOCKERFILE_PATH"
+emit_environments
 
 echo "Parsed service configuration:"
 echo "  name: ${NAME}"
@@ -193,3 +250,5 @@ echo "  deployment_repo: ${DEPLOYMENT_REPO}"
 echo "  deployment_repo_path: ${DEPLOYMENT_REPO_PATH}"
 echo "  build_context: ${BUILD_CONTEXT}"
 echo "  dockerfile_path: ${DOCKERFILE_PATH}"
+# Note: the environments log line is emitted by emit_environments() above so it
+# also fires on the early-exit paths (config-missing, service-not-found).
