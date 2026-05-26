@@ -100,6 +100,24 @@ run_parse() {
   WORKING_DIR="$working_dir" \
   SERVICE_NAME="$svc" \
   CONFIG_PATH="$cfg_path" \
+  DEFAULT_DOCKERFILE_PATH="${DEFAULT_DOCKERFILE_PATH:-}" \
+  DEFAULT_BUILD_CONTEXT="${DEFAULT_BUILD_CONTEXT:-}" \
+  GITHUB_OUTPUT="$out_file" \
+    bash "$PARSE_SCRIPT" >/dev/null
+  echo "$out_file"
+}
+
+# Run parse.sh with explicit caller-supplied default_* fallback inputs.
+run_parse_with_defaults() {
+  local working_dir="$1" svc="$2" default_df="$3" default_ctx="$4"
+  local out_file
+  out_file="$WORK/gh_output.$RANDOM"
+  : >"$out_file"
+  WORKING_DIR="$working_dir" \
+  SERVICE_NAME="$svc" \
+  CONFIG_PATH=".skyhook/skyhook.yaml" \
+  DEFAULT_DOCKERFILE_PATH="$default_df" \
+  DEFAULT_BUILD_CONTEXT="$default_ctx" \
   GITHUB_OUTPUT="$out_file" \
     bash "$PARSE_SCRIPT" >/dev/null
   echo "$out_file"
@@ -155,19 +173,53 @@ assert_eq "$(read_output "$out" deployment_repo_path)" "nbjkgj" "with-context: d
 assert_eq "$(read_output "$out" build_context)" "java-web-project/src" "with-context: build_context"
 assert_eq "$(read_output "$out" dockerfile_path)" "java-web-project/src/Dockerfile" "with-context: dockerfile_path"
 
-# --- buildContext absent => default "." ---
+# --- buildContext absent + no DEFAULT_BUILD_CONTEXT => empty ---
+# The action no longer hardcodes "." — the caller owns the fallback via the
+# default_build_context input. Without one supplied, the output is empty.
 out=$(run_parse "$WORK" no-context)
-assert_eq "$(read_output "$out" build_context)" "." "no-context: build_context defaults to '.'"
+assert_eq "$(read_output "$out" build_context)" "" "no-context: build_context empty when no default supplied"
 assert_eq "$(read_output "$out" dockerfile_path)" "java-multi-modules/Dockerfile" "no-context: dockerfile_path"
 assert_eq "$(read_output "$out" deployment_repo)" "skyhook-dev/deployment" "no-context: deployment_repo"
 
-# --- buildContext: null => default "." ---
+# --- buildContext: null + no DEFAULT_BUILD_CONTEXT => empty ---
 out=$(run_parse "$WORK" explicit-null)
-assert_eq "$(read_output "$out" build_context)" "." "explicit-null: build_context defaults to '.'"
+assert_eq "$(read_output "$out" build_context)" "" "explicit-null: build_context empty when no default supplied"
 
-# --- buildContext: "" => default "." ---
+# --- buildContext: "" + no DEFAULT_BUILD_CONTEXT => empty ---
 out=$(run_parse "$WORK" empty-string)
-assert_eq "$(read_output "$out" build_context)" "." "empty-string: build_context defaults to '.'"
+assert_eq "$(read_output "$out" build_context)" "" "empty-string: build_context empty when no default supplied"
+
+# --- DEFAULT_BUILD_CONTEXT fills in when YAML field is absent ---
+out=$(run_parse_with_defaults "$WORK" no-context "" ".")
+assert_eq "$(read_output "$out" build_context)" "." "no-context + default_build_context='.': output is '.'"
+
+out=$(run_parse_with_defaults "$WORK" explicit-null "" "java-multi-modules")
+assert_eq "$(read_output "$out" build_context)" "java-multi-modules" "explicit-null + custom default: output is the default"
+
+out=$(run_parse_with_defaults "$WORK" empty-string "" "svc-empty")
+assert_eq "$(read_output "$out" build_context)" "svc-empty" "empty-string + custom default: output is the default"
+
+# --- DEFAULT_BUILD_CONTEXT NOT used when YAML provides a value ---
+out=$(run_parse_with_defaults "$WORK" with-context "" "should-not-be-used")
+assert_eq "$(read_output "$out" build_context)" "java-web-project/src" "yaml value wins over default_build_context"
+
+# --- DEFAULT_DOCKERFILE_PATH fills in when YAML field is absent ---
+# (Add a fixture without dockerfilePath to exercise this.)
+NO_DF_DIR="$WORK/no-df"
+mkdir -p "$NO_DF_DIR/.skyhook"
+cat >"$NO_DF_DIR/.skyhook/skyhook.yaml" <<'YAML'
+services:
+  - name: bare
+    path: services/bare
+YAML
+out=$(run_parse_with_defaults "$NO_DF_DIR" bare "services/bare/Dockerfile" "services/bare")
+assert_eq "$(read_output "$out" dockerfile_path)" "services/bare/Dockerfile" "bare service + default_dockerfile_path: output is the default"
+assert_eq "$(read_output "$out" build_context)" "services/bare" "bare service + default_build_context: output is the default"
+assert_eq "$(read_output "$out" service_found)" "true" "bare service still reports service_found=true"
+
+# --- DEFAULT_DOCKERFILE_PATH NOT used when YAML provides a value ---
+out=$(run_parse_with_defaults "$WORK" with-context "should-not-be-used" "")
+assert_eq "$(read_output "$out" dockerfile_path)" "java-web-project/src/Dockerfile" "yaml value wins over default_dockerfile_path"
 
 # --- value with spaces survives heredoc round-trip ---
 out=$(run_parse "$WORK" with-spaces)
@@ -179,17 +231,32 @@ out=$(run_parse "$WORK" 'name-with-"-quote')
 assert_eq "$(read_output "$out" service_found)" "true" "quoted service name resolves"
 assert_eq "$(read_output "$out" path)" "svc-quote" "quoted service name: path"
 
-# --- service not found ---
+# --- service not found, no defaults => empty ---
 out=$(run_parse "$WORK" nonexistent-service)
 assert_eq "$(read_output "$out" config_found)" "true" "missing service: config_found=true"
 assert_eq "$(read_output "$out" service_found)" "false" "missing service: service_found=false"
-assert_eq "$(read_output "$out" build_context)" "" "missing service: build_context empty (asymmetry)"
+assert_eq "$(read_output "$out" build_context)" "" "missing service: build_context empty when no default"
+assert_eq "$(read_output "$out" dockerfile_path)" "" "missing service: dockerfile_path empty when no default"
 
-# --- config file missing ---
+# --- service not found, WITH defaults => defaults are emitted ---
+out=$(run_parse_with_defaults "$WORK" nonexistent-service "Dockerfile" ".")
+assert_eq "$(read_output "$out" config_found)" "true" "missing service + defaults: config_found=true"
+assert_eq "$(read_output "$out" service_found)" "false" "missing service + defaults: service_found=false"
+assert_eq "$(read_output "$out" build_context)" "." "missing service + defaults: build_context fallback applied"
+assert_eq "$(read_output "$out" dockerfile_path)" "Dockerfile" "missing service + defaults: dockerfile_path fallback applied"
+
+# --- config file missing, no defaults => empty ---
 out=$(run_parse "$WORK/no-such-dir" any-service)
 assert_eq "$(read_output "$out" config_found)" "false" "missing config: config_found=false"
 assert_eq "$(read_output "$out" service_found)" "false" "missing config: service_found=false"
-assert_eq "$(read_output "$out" build_context)" "" "missing config: build_context empty"
+assert_eq "$(read_output "$out" build_context)" "" "missing config: build_context empty when no default"
+assert_eq "$(read_output "$out" dockerfile_path)" "" "missing config: dockerfile_path empty when no default"
+
+# --- config file missing, WITH defaults => defaults are emitted ---
+out=$(run_parse_with_defaults "$WORK/no-such-dir" any-service "fallback/Dockerfile" "fallback")
+assert_eq "$(read_output "$out" config_found)" "false" "missing config + defaults: config_found=false"
+assert_eq "$(read_output "$out" build_context)" "fallback" "missing config + defaults: build_context fallback applied"
+assert_eq "$(read_output "$out" dockerfile_path)" "fallback/Dockerfile" "missing config + defaults: dockerfile_path fallback applied"
 
 # --- empty service_name ---
 err=$(run_parse_expect_fail "$WORK" "")
@@ -271,5 +338,13 @@ grep -q "strenv(SERVICE_NAME)" "$PARSE_SCRIPT" || { echo "FAIL: parse.sh does no
 grep -q "Multiple services named" "$PARSE_SCRIPT" || { echo "FAIL: parse.sh does not detect duplicate names"; exit 1; }
 grep -q "service_name input is required" "$PARSE_SCRIPT" || { echo "FAIL: parse.sh does not validate non-empty service_name"; exit 1; }
 grep -q 'Failed to parse' "$PARSE_SCRIPT" || { echo "FAIL: parse.sh does not surface yq parse errors"; exit 1; }
-grep -q 'BUILD_CONTEXT="\."' "$PARSE_SCRIPT" || { echo "FAIL: parse.sh does not default build_context to '.'"; exit 1; }
-echo "PASS: parse.sh has strenv, dup-detection, empty-name validation, parse-error surfacing, build_context default"
+grep -q 'DEFAULT_BUILD_CONTEXT' "$PARSE_SCRIPT" || { echo "FAIL: parse.sh does not consume DEFAULT_BUILD_CONTEXT"; exit 1; }
+grep -q 'DEFAULT_DOCKERFILE_PATH' "$PARSE_SCRIPT" || { echo "FAIL: parse.sh does not consume DEFAULT_DOCKERFILE_PATH"; exit 1; }
+echo "PASS: parse.sh has strenv, dup-detection, empty-name validation, parse-error surfacing, caller-driven defaults"
+
+# --- action.yml exposes the new default_* inputs ---
+grep -q 'default_dockerfile_path:' "$ACTION_FILE" || { echo "FAIL: action.yml does not declare default_dockerfile_path input"; exit 1; }
+grep -q 'default_build_context:' "$ACTION_FILE" || { echo "FAIL: action.yml does not declare default_build_context input"; exit 1; }
+grep -q 'DEFAULT_DOCKERFILE_PATH: ${{ inputs.default_dockerfile_path }}' "$ACTION_FILE" || { echo "FAIL: action.yml does not pipe default_dockerfile_path to parse.sh"; exit 1; }
+grep -q 'DEFAULT_BUILD_CONTEXT: ${{ inputs.default_build_context }}' "$ACTION_FILE" || { echo "FAIL: action.yml does not pipe default_build_context to parse.sh"; exit 1; }
+echo "PASS: action.yml exposes default_dockerfile_path + default_build_context inputs piped to parse.sh"

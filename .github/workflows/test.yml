@@ -60,16 +60,54 @@ jobs:
           test "${{ steps.cfg.outputs.dockerfile_path }}" = "services/smoke/Dockerfile"
           echo "smoke-svc outputs OK"
 
-      - name: Run action against fixture (buildContext absent -> default '.')
+      - name: Run action against fixture (buildContext absent, no caller default)
         id: cfg2
         uses: ./
         with:
           working_directory: tests/fixtures
           service_name: smoke-default-context
 
-      - name: Verify default-context outputs
+      - name: Verify outputs when YAML lacks buildContext and no caller default
         run: |
           set -e
-          test "${{ steps.cfg2.outputs.build_context }}" = "."
+          # build_context comes from YAML when present; otherwise echoes whatever
+          # default_build_context the caller passed (here: nothing → empty).
+          test "${{ steps.cfg2.outputs.build_context }}" = ""
           test "${{ steps.cfg2.outputs.dockerfile_path }}" = "services/default/Dockerfile"
-          echo "default-context outputs OK"
+          echo "default-context outputs OK (empty fallback)"
+
+      - name: Run action with caller-supplied default_* fallbacks
+        id: cfg3
+        uses: ./
+        with:
+          working_directory: tests/fixtures
+          service_name: smoke-default-context
+          default_build_context: 'services/default'
+          default_dockerfile_path: 'services/default/Custom.Dockerfile'
+
+      - name: Verify caller defaults fill in YAML-absent fields
+        run: |
+          set -e
+          # buildContext is absent in YAML for smoke-default-context → fall back to caller-supplied default
+          test "${{ steps.cfg3.outputs.build_context }}" = "services/default"
+          # dockerfilePath IS in YAML → YAML wins, caller default is ignored
+          test "${{ steps.cfg3.outputs.dockerfile_path }}" = "services/default/Dockerfile"
+          echo "caller-default fallback OK"
+
+      - name: Run action against missing service with caller defaults
+        id: cfg4
+        uses: ./
+        with:
+          working_directory: tests/fixtures
+          service_name: not-a-real-service
+          default_build_context: '.'
+          default_dockerfile_path: 'Dockerfile'
+
+      - name: Verify caller defaults applied on missing service
+        run: |
+          set -e
+          test "${{ steps.cfg4.outputs.config_found }}" = "true"
+          test "${{ steps.cfg4.outputs.service_found }}" = "false"
+          test "${{ steps.cfg4.outputs.build_context }}" = "."
+          test "${{ steps.cfg4.outputs.dockerfile_path }}" = "Dockerfile"
+          echo "missing-service caller-default OK"
