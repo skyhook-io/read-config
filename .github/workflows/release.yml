@@ -14,6 +14,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # semantic-release walks the full commit history to find the
+          # previous release tag and analyze commits since. Without a deep
+          # fetch the first run can pick the wrong base, and subsequent
+          # runs can mis-version or skip releases entirely.
+          fetch-depth: 0
 
       - uses: codfish/semantic-release-action@v4
         with:
