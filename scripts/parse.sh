@@ -41,10 +41,16 @@ CONFIG_FILE="${WORKING_DIR}/${CONFIG_PATH}"
 
 # Heredoc-form output write: safe for multiline values, leading/trailing whitespace,
 # and values containing literal "=". Generates a unique delimiter per call.
+#
+# The earlier `tr -dc 'a-f0-9' </dev/urandom | head -c 16` form hung
+# indefinitely on macOS runners: when `head` closes its stdin after reading
+# 16 bytes, `tr` reading from `/dev/urandom` did not always receive SIGPIPE
+# in time and would block, killing the whole job. Use bash's built-in
+# $RANDOM + $$ for collision-free uniqueness across a few outputs - no
+# external process, no pipe SIGPIPE dance, fully portable.
 write_output() {
   local key="$1" val="$2"
-  local delim
-  delim="ghadelim_$(LC_ALL=C tr -dc 'a-f0-9' </dev/urandom 2>/dev/null | head -c 16 || echo "$$_$RANDOM$RANDOM")"
+  local delim="ghadelim_${$}_${RANDOM}${RANDOM}${RANDOM}${RANDOM}"
   {
     printf '%s<<%s\n' "$key" "$delim"
     printf '%s\n' "$val"
