@@ -1,0 +1,42 @@
+{
+  "dependencies": {},
+  "npm": null,
+  "runner_tools": "Existing runner binaries and consumer build inputs are not snapshotted.",
+  "snapshot": "7af430a82c5004ba4d90",
+  "source": {
+    "ref": "v1",
+    "repository": "skyhook-io/read-config",
+    "sha": "423bdae6cc3cbc662f940f4576423c364f8d09b6"
+  },
+  "tools": {
+    "yq": {
+      "assets": {
+        "darwin-amd64": {
+          "checksum_url": "https://github.com/mikefarah/yq/releases/download/v4.47.1/checksums-bsd",
+          "encoding": "raw",
+          "sha256": "a9b5ca36f7750576c6ace3cc7193349cd676b3a6bf30193fb2773ff45f5af5c2",
+          "url": "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_darwin_amd64"
+        },
+        "darwin-arm64": {
+          "checksum_url": "https://github.com/mikefarah/yq/releases/download/v4.47.1/checksums-bsd",
+          "encoding": "raw",
+          "sha256": "99aae3a7c9ddfe76bb339f0e7acd8224324b6527436fb6a5d890079bf5fcc590",
+          "url": "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_darwin_arm64"
+        },
+        "linux-amd64": {
+          "checksum_url": "https://github.com/mikefarah/yq/releases/download/v4.47.1/checksums-bsd",
+          "encoding": "raw",
+          "sha256": "0fb28c6680193c41b364193d0c0fc4a03177aecde51cfc04d506b1517158c2fb",
+          "url": "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_amd64"
+        },
+        "linux-arm64": {
+          "checksum_url": "https://github.com/mikefarah/yq/releases/download/v4.47.1/checksums-bsd",
+          "encoding": "raw",
+          "sha256": "b7f7c991abe262b0c6f96bbcb362f8b35429cefd59c8b4c2daa4811f1e9df599",
+          "url": "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_arm64"
+        }
+      },
+      "version": "v4.47.1"
+    }
+  }
+}
