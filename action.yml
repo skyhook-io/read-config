@@ -14,6 +14,14 @@ inputs:
     description: 'Path to the skyhook config file relative to working_directory'
     required: false
     default: '.skyhook/skyhook.yaml'
+  default_dockerfile_path:
+    description: 'Fallback for the dockerfile_path output. Used when the YAML config is unreadable, the service is missing, or buildTool.docker.dockerfilePath is unset/empty. Empty by default — the caller decides whether to fall back ("Dockerfile", "<service-path>/Dockerfile", etc.).'
+    required: false
+    default: ''
+  default_build_context:
+    description: 'Fallback for the build_context output. Used when the YAML config is unreadable, the service is missing, or buildTool.docker.buildContext is unset/empty. Empty by default — the caller decides (".", the source path, etc.).'
+    required: false
+    default: ''
 
 outputs:
   # Service configuration
@@ -32,10 +40,10 @@ outputs:
 
   # Build tool configuration
   build_context:
-    description: 'Docker build context relative to repo root (defaults to "." when absent in config)'
+    description: 'Docker build context relative to repo root. Sourced from buildTool.docker.buildContext in the YAML when available; falls back to the default_build_context input otherwise.'
     value: ${{ steps.parse.outputs.build_context }}
   dockerfile_path:
-    description: 'Dockerfile path relative to repo root'
+    description: 'Dockerfile path relative to repo root. Sourced from buildTool.docker.dockerfilePath in the YAML when available; falls back to the default_dockerfile_path input otherwise.'
     value: ${{ steps.parse.outputs.dockerfile_path }}
 
   # Status
@@ -110,6 +118,8 @@ runs:
         WORKING_DIR: ${{ inputs.working_directory }}
         SERVICE_NAME: ${{ inputs.service_name }}
         CONFIG_PATH: ${{ inputs.config_path }}
+        DEFAULT_DOCKERFILE_PATH: ${{ inputs.default_dockerfile_path }}
+        DEFAULT_BUILD_CONTEXT: ${{ inputs.default_build_context }}
       run: bash "$GITHUB_ACTION_PATH/scripts/parse.sh"
 
 branding:

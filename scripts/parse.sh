@@ -2,10 +2,18 @@
 # Parse a Skyhook config file and emit GitHub Actions-style outputs.
 #
 # Inputs (env):
-#   WORKING_DIR    - repo root containing the config (default ".")
-#   SERVICE_NAME   - service to look up (required, non-empty)
-#   CONFIG_PATH    - path to config relative to WORKING_DIR (default ".skyhook/skyhook.yaml")
-#   GITHUB_OUTPUT  - file to append outputs to (required by GitHub Actions; tests pass a tempfile)
+#   WORKING_DIR              - repo root containing the config (default ".")
+#   SERVICE_NAME             - service to look up (required, non-empty)
+#   CONFIG_PATH              - path to config relative to WORKING_DIR (default ".skyhook/skyhook.yaml")
+#   DEFAULT_DOCKERFILE_PATH  - fallback when YAML doesn't supply dockerfile_path
+#   DEFAULT_BUILD_CONTEXT    - fallback when YAML doesn't supply build_context
+#   GITHUB_OUTPUT            - file to append outputs to (required by GitHub Actions; tests pass a tempfile)
+#
+# Fallback rule for build_context / dockerfile_path: the YAML value wins when
+# the config is readable AND the service exists AND the field is non-empty.
+# In every other case (config missing, service missing, field absent or
+# explicitly null/empty) the corresponding DEFAULT_* input is emitted —
+# empty by default, so the caller decides what their fallback should be.
 #
 # Exits non-zero with ::error:: on:
 #   - empty SERVICE_NAME
@@ -21,6 +29,8 @@ WORKING_DIR="${WORKING_DIR:-.}"
 WORKING_DIR="${WORKING_DIR%/}"
 CONFIG_PATH="${CONFIG_PATH:-.skyhook/skyhook.yaml}"
 SERVICE_NAME="${SERVICE_NAME:-}"
+DEFAULT_DOCKERFILE_PATH="${DEFAULT_DOCKERFILE_PATH:-}"
+DEFAULT_BUILD_CONTEXT="${DEFAULT_BUILD_CONTEXT:-}"
 
 if [ -z "$SERVICE_NAME" ]; then
   echo "::error::service_name input is required and must be non-empty"
@@ -31,10 +41,16 @@ CONFIG_FILE="${WORKING_DIR}/${CONFIG_PATH}"
 
 # Heredoc-form output write: safe for multiline values, leading/trailing whitespace,
 # and values containing literal "=". Generates a unique delimiter per call.
+#
+# The earlier `tr -dc 'a-f0-9' </dev/urandom | head -c 16` form hung
+# indefinitely on macOS runners: when `head` closes its stdin after reading
+# 16 bytes, `tr` reading from `/dev/urandom` did not always receive SIGPIPE
+# in time and would block, killing the whole job. Use bash's built-in
+# $RANDOM + $$ for collision-free uniqueness across a few outputs - no
+# external process, no pipe SIGPIPE dance, fully portable.
 write_output() {
   local key="$1" val="$2"
-  local delim
-  delim="ghadelim_$(LC_ALL=C tr -dc 'a-f0-9' </dev/urandom 2>/dev/null | head -c 16 || echo "$$_$RANDOM$RANDOM")"
+  local delim="ghadelim_${$}_${RANDOM}${RANDOM}${RANDOM}${RANDOM}"
   {
     printf '%s<<%s\n' "$key" "$delim"
     printf '%s\n' "$val"
@@ -42,13 +58,16 @@ write_output() {
   } >> "$GITHUB_OUTPUT"
 }
 
+# Emit empty/identity outputs for the no-data path. build_context and
+# dockerfile_path still fall back to the caller-supplied defaults so a
+# missing config / service yields the same shape as a present-but-empty one.
 write_empty_outputs() {
   write_output name ""
   write_output path ""
   write_output deployment_repo ""
   write_output deployment_repo_path ""
-  write_output build_context ""
-  write_output dockerfile_path ""
+  write_output build_context "$DEFAULT_BUILD_CONTEXT"
+  write_output dockerfile_path "$DEFAULT_DOCKERFILE_PATH"
 }
 
 # Config file missing
@@ -114,8 +133,11 @@ DOCKERFILE_PATH=$(yq e "${SERVICE_PATH}.buildTool.docker.dockerfilePath // \"\""
 [ "$BUILD_CONTEXT" = "null" ] && BUILD_CONTEXT=""
 [ "$DOCKERFILE_PATH" = "null" ] && DOCKERFILE_PATH=""
 
-# Default build context to "." when absent
-[ -z "$BUILD_CONTEXT" ] && BUILD_CONTEXT="."
+# Apply caller-supplied fallbacks for the build-tool fields when YAML didn't
+# provide a value. No hardcoded action-side defaults — the caller owns the
+# fallback policy via the default_* inputs.
+[ -z "$BUILD_CONTEXT" ] && BUILD_CONTEXT="$DEFAULT_BUILD_CONTEXT"
+[ -z "$DOCKERFILE_PATH" ] && DOCKERFILE_PATH="$DEFAULT_DOCKERFILE_PATH"
 
 write_output name "$NAME"
 write_output path "$PATH_VALUE"

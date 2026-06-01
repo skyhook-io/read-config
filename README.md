@@ -35,6 +35,8 @@ This action parses the Skyhook configuration file and extracts service-specific 
 | `working_directory` | Path to the repository root containing `.skyhook/skyhook.yaml` | No | `.` |
 | `service_name` | Name of the service to look up in the config | Yes | - |
 | `config_path` | Path to the skyhook config file relative to working_directory | No | `.skyhook/skyhook.yaml` |
+| `default_dockerfile_path` | Fallback for `dockerfile_path` when the YAML doesn't supply one (config unreadable, service missing, or `buildTool.docker.dockerfilePath` unset/empty). | No | `""` |
+| `default_build_context` | Fallback for `build_context` when the YAML doesn't supply one. | No | `""` |
 
 ## Outputs
 
@@ -105,20 +107,33 @@ jobs:
 
 ## Behavior matrix
 
-| Scenario | `config_found` | `service_found` | `build_context` | Other outputs |
-|---|---|---|---|---|
-| Config file missing | `false` | `false` | `""` | `""` |
-| Config found, service missing | `true` | `false` | `""` | `""` |
-| Service found, `buildContext` set | `true` | `true` | from config | from config |
-| Service found, `buildContext` absent | `true` | `true` | `"."` | from config |
-| Duplicate service names in config | n/a | n/a | n/a | action exits 1 |
+The two build-tool outputs (`build_context`, `dockerfile_path`) follow a single rule:
 
-`build_context` defaults to `"."` only when the service is found and the field is absent. When the service or config itself is missing, `build_context` is empty - the workflow should decide whether to fall back or fail loudly:
+> **YAML wins when the config is readable AND the service exists AND the field is non-empty. In every other case, the caller-supplied `default_*` input is emitted.**
+
+`name`, `path`, `deployment_repo`, and `deployment_repo_path` are always sourced from the YAML and emit empty when the config/service can't be read — there are no `default_*` fallbacks for them.
+
+| Scenario | `config_found` | `service_found` | `build_context` | `dockerfile_path` |
+|---|---|---|---|---|
+| Config file missing | `false` | `false` | `default_build_context` | `default_dockerfile_path` |
+| Config found, service missing | `true` | `false` | `default_build_context` | `default_dockerfile_path` |
+| Service found, both fields set | `true` | `true` | from YAML | from YAML |
+| Service found, only `buildContext` set | `true` | `true` | from YAML | `default_dockerfile_path` |
+| Service found, neither field set | `true` | `true` | `default_build_context` | `default_dockerfile_path` |
+| Duplicate service names | n/a | n/a | n/a | action exits 1 |
+
+Without `default_*` inputs the fallback is empty — meaning a workflow that wants a guaranteed-non-empty value should pass them at the call site:
 
 ```yaml
-context: ${{ steps.config.outputs.build_context || '.' }}
-dockerfile: ${{ steps.config.outputs.dockerfile_path || 'Dockerfile' }}
+- uses: skyhook-io/read-config@v1
+  with:
+    service_name: my-svc
+    # Computed sensible fallbacks the caller controls:
+    default_dockerfile_path: services/my-svc/Dockerfile
+    default_build_context: .
 ```
+
+`config_found` and `service_found` remain available so the caller can distinguish between a YAML-sourced value and a fallback if needed.
 
 ## Runner requirements
 
