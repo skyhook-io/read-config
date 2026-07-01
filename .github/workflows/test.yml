@@ -21,7 +21,7 @@ jobs:
     # hours waiting for the platform timeout.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install yq v4 (linux)
         if: runner.os == 'Linux'
@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Run action against fixture (buildContext present)
         id: cfg
